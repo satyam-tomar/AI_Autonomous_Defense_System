@@ -1,0 +1,96 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# requirements.txt  —  Video-to-String · Qwen2.5-VL-3B-Instruct
+# Install order matters on Windows + CUDA 12.1:
+#   1. Install PyTorch first (see note below)
+#   2. pip install -r requirements.txt
+#
+# PyTorch CUDA 12.1 — install manually BEFORE this file:
+#   pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Core deep-learning stack
+torch>=2.3.0                  # must be the cu121 wheel (install separately)
+torchvision>=0.18.0           # same index-url as torch
+
+# Model loading & inference
+transformers>=4.49.0          # Qwen2.5-VL support landed in 4.49
+accelerate>=0.34.0            # required for device_map="auto"
+bitsandbytes>=0.43.3          # 4-bit NF4 quantization on Windows/CUDA 12.1
+
+# Qwen-VL vision utilities (process_vision_info + pixel scaling helpers)
+qwen-vl-utils>=0.0.8
+
+# Computer vision / webcam capture
+opencv-python>=4.10.0         # cv2.VideoCapture, imshow, putText
+
+# Image handling (PIL used to pass frames to the processor)
+Pillow>=10.3.0
+
+# ─────────────────────────────────────────────────────────────────────────────
+# requirements.txt  —  Tactical Decision Engine (HITL)
+# Target: Ryzen 5 / 16 GB RAM / Windows or Linux
+# Install: pip install -r requirements.txt
+# ─────────────────────────────────────────────────────────────────────────────
+
+# LangGraph — stateful agent orchestration with interrupt/resume support
+langgraph>=0.2.55
+
+# LangChain Ollama — local LLM integration (llama3.2:3b via Ollama server)
+langchain-ollama>=0.2.0
+
+# LangChain core — base message types, prompt templates
+langchain-core>=0.3.0
+
+# Streamlit — interactive frontend
+streamlit>=1.40.0
+
+# Typing helpers
+typing-extensions>=4.12.0
+
+
+flask
+flask-cors
+flask-socketio
+python-socketio[asyncio_client]   # not needed server-side, but useful for testing
+eventlet                          # or gevent — needed for async SocketIO emit
+#                                   # if you hit threading issues, run:
+#                                   #   pip install eventlet
+#                                   # and add at top of file (before all imports):
+#                                   #   import eventlet; eventlet.monkey_patch()
+opencv-python
+torch
+transformers
+bitsandbytes
+qwen-vl-utils
+langchain-core
+langchain-ollama
+langgraph
+Pillow
+# ═════════
+
+# requirements.txt - Autonomous Tactical Vision System
+# ------------------------------------------------------
+# Step 1 - Install PyTorch CUDA 12.1 FIRST:
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+#
+# Step 2 - Install everything else:
+#   pip install -r requirements.txt
+
+# Web framework + WebSocket
+flask>=3.0.0
+flask-sock>=0.7.0
+
+# LangGraph HITL workflow
+langgraph>=0.2.55
+langchain-ollama>=0.2.0
+langchain-core>=0.3.0
+
+# Vision model + 4-bit quantisation
+transformers>=4.49.0
+accelerate>=0.34.0
+bitsandbytes>=0.43.3
+qwen-vl-utils>=0.0.8
+
+# Computer vision / webcam
+opencv-python>=4.10.0
+Pillow>=10.3.0
