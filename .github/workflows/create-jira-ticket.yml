@@ -1,16 +1,19 @@
+
 name: Create Jira Ticket
 
 on:
   pull_request_target:
-    types: [opened, synchronize, reopened]
+    types: [opened]
 
 jobs:
   create-ticket:
     runs-on: ubuntu-latest
     environment: jira
+    permissions:
+      pull-requests: write
 
     steps:
-      - name: Create or Update Jira Issue
+      - name: Create Jira Issue and link to PR
         env:
           JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
           JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
@@ -23,10 +26,11 @@ jobs:
           PR_BRANCH: ${{ github.event.pull_request.head.ref }}
           PR_BASE: ${{ github.event.pull_request.base.ref }}
           REPO_NAME: ${{ github.repository }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           SUMMARY_PREFIX="PR #${PR_NUMBER} -"
 
-          # Fetch tickets from Jira matching this PR number in the summary
+          # Check if a Jira ticket already exists for this PR number
           SEARCH_RESPONSE=$(curl -s -G \
             -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
             -H "Accept: application/json" \
@@ -35,67 +39,66 @@ jobs:
             --data-urlencode "maxResults=10" \
             "https://${JIRA_SITE}/rest/api/3/search")
 
-          echo "Search response: $SEARCH_RESPONSE"
-
-          # Exact match: summary must start with "PR #N -" to avoid PR #5 matching PR #50
           EXISTING_KEY=$(echo "$SEARCH_RESPONSE" | jq -r \
             --arg prefix "$SUMMARY_PREFIX" \
             '.issues[] | select(.fields.summary | startswith($prefix)) | .key' | head -1)
 
           if [ -n "$EXISTING_KEY" ]; then
-            echo "Ticket ${EXISTING_KEY} already exists — adding update comment."
-
-            COMMENT_TEXT=$(printf "PR #%s updated by %s\n\nBranch: %s → %s\nURL: %s\n\n%s" \
-              "${PR_NUMBER}" "${PR_AUTHOR}" "${PR_BRANCH}" "${PR_BASE}" "${PR_URL}" \
-              "${PR_BODY:-No description provided.}")
-
-            COMMENT_PAYLOAD=$(jq -n \
-              --arg text "$COMMENT_TEXT" \
-              '{body: {type: "doc", version: 1, content: [{type: "paragraph", content: [{type: "text", text: $text}]}]}}')
-
-            RESPONSE=$(curl -s -X POST \
-              -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
-              -H "Accept: application/json" \
-              -H "Content-Type: application/json" \
-              "https://${JIRA_SITE}/rest/api/3/issue/${EXISTING_KEY}/comment" \
-              --data "$COMMENT_PAYLOAD")
-
-            echo "Comment added to ${EXISTING_KEY}:"
-            echo "$RESPONSE"
-
-          else
-            echo "No existing ticket found — creating new ticket."
-
-            DESCRIPTION=$(printf "Repository: %s\nBranch: %s → %s\nAuthor: %s\nPR URL: %s\n\nDescription:\n%s" \
-              "${REPO_NAME}" "${PR_BRANCH}" "${PR_BASE}" "${PR_AUTHOR}" "${PR_URL}" \
-              "${PR_BODY:-No description provided.}")
-
-            PAYLOAD=$(jq -n \
-              --arg summary "PR #${PR_NUMBER} - ${PR_TITLE}" \
-              --arg description "$DESCRIPTION" \
-              '{
-                fields: {
-                  project: {key: "KAN"},
-                  summary: $summary,
-                  description: {
-                    type: "doc",
-                    version: 1,
-                    content: [{
-                      type: "paragraph",
-                      content: [{type: "text", text: $description}]
-                    }]
-                  },
-                  issuetype: {name: "Task"}
-                }
-              }')
-
-            RESPONSE=$(curl -s -X POST \
-              -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
-              -H "Accept: application/json" \
-              -H "Content-Type: application/json" \
-              "https://${JIRA_SITE}/rest/api/3/issue" \
-              --data "$PAYLOAD")
-
-            echo "Ticket created:"
-            echo "$RESPONSE"
+            echo "Ticket ${EXISTING_KEY} already exists for PR #${PR_NUMBER} — skipping creation."
+            exit 0
           fi
+
+          echo "No existing ticket found — creating new Jira ticket."
+
+          DESCRIPTION=$(printf "Repository: %s\nBranch: %s → %s\nAuthor: %s\nPR URL: %s\n\nDescription:\n%s" \
+            "${REPO_NAME}" "${PR_BRANCH}" "${PR_BASE}" "${PR_AUTHOR}" "${PR_URL}" \
+            "${PR_BODY:-No description provided.}")
+
+          PAYLOAD=$(jq -n \
+            --arg summary "PR #${PR_NUMBER} - ${PR_TITLE}" \
+            --arg description "$DESCRIPTION" \
+            '{
+              fields: {
+                project: {key: "KAN"},
+                summary: $summary,
+                description: {
+                  type: "doc",
+                  version: 1,
+                  content: [{
+                    type: "paragraph",
+                    content: [{type: "text", text: $description}]
+                  }]
+                },
+                issuetype: {name: "Task"}
+              }
+            }')
+
+          CREATE_RESPONSE=$(curl -s -X POST \
+            -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
+            -H "Accept: application/json" \
+            -H "Content-Type: application/json" \
+            "https://${JIRA_SITE}/rest/api/3/issue" \
+            --data "$PAYLOAD")
+
+          echo "Create response: $CREATE_RESPONSE"
+
+          TICKET_KEY=$(echo "$CREATE_RESPONSE" | jq -r '.key // empty')
+
+          if [ -z "$TICKET_KEY" ]; then
+            echo "Failed to get ticket key from response — skipping PR update."
+            exit 1
+          fi
+
+          echo "Ticket ${TICKET_KEY} created. Writing key back to PR description..."
+
+          # Append Jira ticket key to PR body so GitHub for Atlassian tracks future updates
+          UPDATED_BODY=$(printf "%s\n\n---\nJira: [%s](https://%s/browse/%s)" \
+            "${PR_BODY:-}" "${TICKET_KEY}" "${JIRA_SITE}" "${TICKET_KEY}")
+
+          curl -s -X PATCH \
+            -H "Authorization: token ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github.v3+json" \
+            "https://api.github.com/repos/${REPO_NAME}/pulls/${PR_NUMBER}" \
+            --data "$(jq -n --arg body "$UPDATED_BODY" '{body: $body}')" > /dev/null
+
+          echo "PR #${PR_NUMBER} description updated with Jira link: ${TICKET_KEY}"
