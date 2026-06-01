@@ -10,22 +10,23 @@ jobs:
 
     steps:
       - name: Create Jira Issue
+        env:
+          JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
+          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+          JIRA_SITE: ${{ secrets.JIRA_SITE }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
         run: |
+          SUMMARY="PR #${PR_NUMBER} - ${PR_TITLE}"
+          PAYLOAD=$(jq -n \
+            --arg summary "$SUMMARY" \
+            '{fields: {project: {key: "KAN"}, summary: $summary, issuetype: {name: "Task"}}}')
+
           RESPONSE=$(curl -s -X POST \
-            -u "${{ secrets.JIRA_EMAIL }}:${{ secrets.JIRA_API_TOKEN }}" \
+            -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
             -H "Accept: application/json" \
             -H "Content-Type: application/json" \
-            https://${{ secrets.JIRA_SITE }}/rest/api/3/issue \
-            --data '{
-              "fields": {
-                "project": {
-                  "key": "KAN"
-                },
-                "summary": "PR #${{ github.event.pull_request.number }} - ${{ github.event.pull_request.title }}",
-                "issuetype": {
-                  "name": "Task"
-                }
-              }
-            }')
+            "https://${JIRA_SITE}/rest/api/3/issue" \
+            --data "$PAYLOAD")
 
           echo "$RESPONSE"
