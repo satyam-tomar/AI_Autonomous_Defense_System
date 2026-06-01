@@ -40,12 +40,9 @@ jobs:
           if [ -n "$EXISTING_KEY" ]; then
             echo "Ticket ${EXISTING_KEY} already exists — adding update comment."
 
-            COMMENT_TEXT="PR #${PR_NUMBER} updated by ${PR_AUTHOR}
-
-Branch: ${PR_BRANCH} → ${PR_BASE}
-URL: ${PR_URL}
-
-${PR_BODY:-No description provided.}"
+            COMMENT_TEXT=$(printf "PR #%s updated by %s\n\nBranch: %s → %s\nURL: %s\n\n%s" \
+              "${PR_NUMBER}" "${PR_AUTHOR}" "${PR_BRANCH}" "${PR_BASE}" "${PR_URL}" \
+              "${PR_BODY:-No description provided.}")
 
             COMMENT_PAYLOAD=$(jq -n \
               --arg text "$COMMENT_TEXT" \
@@ -64,13 +61,9 @@ ${PR_BODY:-No description provided.}"
           else
             echo "No existing ticket found — creating new ticket."
 
-            DESCRIPTION="Repository: ${REPO_NAME}
-Branch: ${PR_BRANCH} → ${PR_BASE}
-Author: ${PR_AUTHOR}
-PR URL: ${PR_URL}
-
-Description:
-${PR_BODY:-No description provided.}"
+            DESCRIPTION=$(printf "Repository: %s\nBranch: %s → %s\nAuthor: %s\nPR URL: %s\n\nDescription:\n%s" \
+              "${REPO_NAME}" "${PR_BRANCH}" "${PR_BASE}" "${PR_AUTHOR}" "${PR_URL}" \
+              "${PR_BODY:-No description provided.}")
 
             PAYLOAD=$(jq -n \
               --arg summary "PR #${PR_NUMBER} - ${PR_TITLE}" \
