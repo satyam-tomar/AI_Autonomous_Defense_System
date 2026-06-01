@@ -9,6 +9,16 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Debug secrets
+        env:
+          JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
+          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+          JIRA_SITE: ${{ secrets.JIRA_SITE }}
+        run: |
+          echo "JIRA_EMAIL length: ${#JIRA_EMAIL}"
+          echo "JIRA_API_TOKEN length: ${#JIRA_API_TOKEN}"
+          echo "JIRA_SITE value: ${JIRA_SITE}"
+
       - name: Create Jira Issue
         env:
           JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
