@@ -26,88 +26,116 @@ jobs:
           PR_BASE: ${{ github.event.pull_request.base.ref }}
           REPO_NAME: ${{ github.repository }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EVENT_ACTION: ${{ github.event.action }}
         run: |
-          # Look for our marker "Jira: KAN-N" in the PR description
-          # This is written by us when a ticket is first created
-          EXISTING_KEY=$(echo "${PR_BODY}" | grep -oE 'Jira: [A-Z]+-[0-9]+' | grep -oE '[A-Z]+-[0-9]+' | head -1)
 
-          if [ -n "$EXISTING_KEY" ]; then
-            echo "Found existing Jira ticket ${EXISTING_KEY} in PR description — adding update comment."
+          # ==============================================================
+          # OPENED — new PR, always create a fresh Jira ticket.
+          # Only skip if our workflow already ran (title has [KAN-N] prefix).
+          # We deliberately ignore any Jira key in the description because
+          # auto-created PRs copy the old description which contains the
+          # previous PR's Jira marker — that must not block ticket creation.
+          # ==============================================================
+          if [ "$EVENT_ACTION" = "opened" ]; then
 
-            COMMENT_TEXT=$(printf "PR #%s updated by %s\n\nBranch: %s -> %s\nURL: %s\n\n%s" \
-              "${PR_NUMBER}" "${PR_AUTHOR}" "${PR_BRANCH}" "${PR_BASE}" "${PR_URL}" \
+            ALREADY_TAGGED=$(echo "${PR_TITLE}" | grep -oE '^\[[A-Z]+-[0-9]+\]' | head -1)
+            if [ -n "$ALREADY_TAGGED" ]; then
+              echo "PR title already tagged with Jira key — workflow already ran. Skipping."
+              exit 0
+            fi
+
+            echo "New PR opened — creating Jira ticket."
+
+            DESCRIPTION=$(printf "Repository: %s\nBranch: %s -> %s\nAuthor: %s\nPR URL: %s\n\nDescription:\n%s" \
+              "${REPO_NAME}" "${PR_BRANCH}" "${PR_BASE}" "${PR_AUTHOR}" "${PR_URL}" \
               "${PR_BODY:-No description provided.}")
 
-            COMMENT_PAYLOAD=$(jq -n \
-              --arg text "$COMMENT_TEXT" \
-              '{body: {type: "doc", version: 1, content: [{type: "paragraph", content: [{type: "text", text: $text}]}]}}')
+            PAYLOAD=$(jq -n \
+              --arg summary "PR #${PR_NUMBER} - ${PR_TITLE}" \
+              --arg description "$DESCRIPTION" \
+              '{
+                fields: {
+                  project: {key: "KAN"},
+                  summary: $summary,
+                  description: {
+                    type: "doc",
+                    version: 1,
+                    content: [{
+                      type: "paragraph",
+                      content: [{type: "text", text: $description}]
+                    }]
+                  },
+                  issuetype: {name: "Task"}
+                }
+              }')
 
-            RESPONSE=$(curl -s -X POST \
+            CREATE_RESPONSE=$(curl -s -X POST \
               -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
               -H "Accept: application/json" \
               -H "Content-Type: application/json" \
-              "https://${JIRA_SITE}/rest/api/3/issue/${EXISTING_KEY}/comment" \
-              --data "$COMMENT_PAYLOAD")
+              "https://${JIRA_SITE}/rest/api/3/issue" \
+              --data "$PAYLOAD")
 
-            echo "Comment added to ${EXISTING_KEY}:"
-            echo "$RESPONSE"
+            echo "Create response: $CREATE_RESPONSE"
+
+            TICKET_KEY=$(echo "$CREATE_RESPONSE" | jq -r '.key // empty')
+            if [ -z "$TICKET_KEY" ]; then
+              echo "Failed to extract ticket key from Jira response."
+              exit 1
+            fi
+
+            echo "Ticket ${TICKET_KEY} created. Updating PR..."
+
+            # Prepend [KAN-N] to PR title — GitHub for Atlassian scans titles reliably
+            NEW_TITLE=$(printf "[%s] %s" "${TICKET_KEY}" "${PR_TITLE}")
+
+            # Strip any stale Jira marker copied from a previous PR description,
+            # then append the fresh one for this PR's ticket
+            CLEAN_BODY=$(printf "%s" "${PR_BODY:-}" | grep -v '^Jira: [A-Z]*-[0-9]' | grep -v '^---$' | sed '/^[[:space:]]*$/{ N; /^\n*$/d }')
+            UPDATED_BODY=$(printf "%s\n\n---\nJira: %s" "${CLEAN_BODY}" "${TICKET_KEY}")
+
+            curl -s -X PATCH \
+              -H "Authorization: token ${GH_TOKEN}" \
+              -H "Accept: application/vnd.github.v3+json" \
+              "https://api.github.com/repos/${REPO_NAME}/pulls/${PR_NUMBER}" \
+              --data "$(jq -n --arg title "$NEW_TITLE" --arg body "$UPDATED_BODY" '{title: $title, body: $body}')" > /dev/null
+
+            echo "PR #${PR_NUMBER} title: ${NEW_TITLE}"
+            echo "PR #${PR_NUMBER} description updated with fresh Jira marker."
             exit 0
           fi
 
-          echo "No existing Jira ticket found — creating new ticket."
+          # ==============================================================
+          # SYNCHRONIZE / REOPENED — existing PR, find ticket and comment.
+          # Check PR title first ([KAN-N] prefix), then description fallback.
+          # ==============================================================
+          EXISTING_KEY=$(echo "${PR_TITLE}" | grep -oE '^\[[A-Z]+-[0-9]+\]' | grep -oE '[A-Z]+-[0-9]+' | head -1)
 
-          DESCRIPTION=$(printf "Repository: %s\nBranch: %s -> %s\nAuthor: %s\nPR URL: %s\n\nDescription:\n%s" \
-            "${REPO_NAME}" "${PR_BRANCH}" "${PR_BASE}" "${PR_AUTHOR}" "${PR_URL}" \
+          if [ -z "$EXISTING_KEY" ]; then
+            EXISTING_KEY=$(echo "${PR_BODY}" | grep -oE 'Jira: [A-Z]+-[0-9]+' | grep -oE '[A-Z]+-[0-9]+' | head -1)
+          fi
+
+          if [ -z "$EXISTING_KEY" ]; then
+            echo "No Jira ticket linked to this PR — nothing to update."
+            exit 0
+          fi
+
+          echo "Found Jira ticket ${EXISTING_KEY} — adding update comment."
+
+          COMMENT_TEXT=$(printf "PR #%s updated by %s\n\nBranch: %s -> %s\nURL: %s\n\nLatest description:\n%s" \
+            "${PR_NUMBER}" "${PR_AUTHOR}" "${PR_BRANCH}" "${PR_BASE}" "${PR_URL}" \
             "${PR_BODY:-No description provided.}")
 
-          PAYLOAD=$(jq -n \
-            --arg summary "PR #${PR_NUMBER} - ${PR_TITLE}" \
-            --arg description "$DESCRIPTION" \
-            '{
-              fields: {
-                project: {key: "KAN"},
-                summary: $summary,
-                description: {
-                  type: "doc",
-                  version: 1,
-                  content: [{
-                    type: "paragraph",
-                    content: [{type: "text", text: $description}]
-                  }]
-                },
-                issuetype: {name: "Task"}
-              }
-            }')
+          COMMENT_PAYLOAD=$(jq -n \
+            --arg text "$COMMENT_TEXT" \
+            '{body: {type: "doc", version: 1, content: [{type: "paragraph", content: [{type: "text", text: $text}]}]}}')
 
-          CREATE_RESPONSE=$(curl -s -X POST \
+          RESPONSE=$(curl -s -X POST \
             -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
             -H "Accept: application/json" \
             -H "Content-Type: application/json" \
-            "https://${JIRA_SITE}/rest/api/3/issue" \
-            --data "$PAYLOAD")
+            "https://${JIRA_SITE}/rest/api/3/issue/${EXISTING_KEY}/comment" \
+            --data "$COMMENT_PAYLOAD")
 
-          echo "Create response: $CREATE_RESPONSE"
-
-          TICKET_KEY=$(echo "$CREATE_RESPONSE" | jq -r '.key // empty')
-
-          if [ -z "$TICKET_KEY" ]; then
-            echo "Failed to extract ticket key from Jira response."
-            exit 1
-          fi
-
-          echo "Ticket ${TICKET_KEY} created. Updating PR title and description..."
-
-          # Prepend Jira key to PR title — GitHub for Atlassian scans PR titles reliably
-          NEW_TITLE=$(printf "[%s] %s" "${TICKET_KEY}" "${PR_TITLE}")
-
-          # Append Jira marker to PR description — our workflow reads this on future runs
-          UPDATED_BODY=$(printf "%s\n\n---\nJira: %s" "${PR_BODY:-}" "${TICKET_KEY}")
-
-          curl -s -X PATCH \
-            -H "Authorization: token ${GH_TOKEN}" \
-            -H "Accept: application/vnd.github.v3+json" \
-            "https://api.github.com/repos/${REPO_NAME}/pulls/${PR_NUMBER}" \
-            --data "$(jq -n --arg title "$NEW_TITLE" --arg body "$UPDATED_BODY" '{title: $title, body: $body}')" > /dev/null
-
-          echo "PR #${PR_NUMBER} title updated to: ${NEW_TITLE}"
-          echo "PR #${PR_NUMBER} description updated with Jira marker."
+          echo "Comment added to ${EXISTING_KEY}:"
+          echo "$RESPONSE"
