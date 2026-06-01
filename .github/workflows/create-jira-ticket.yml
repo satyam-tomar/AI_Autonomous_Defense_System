@@ -26,16 +26,39 @@ jobs:
         run: |
           LABEL="github-pr-${PR_NUMBER}"
 
-          # Check if a Jira ticket already exists for this PR (matched by label)
+          # Step 1: search by label (tickets created with current workflow)
           SEARCH_RESPONSE=$(curl -s -G \
             -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
             -H "Accept: application/json" \
-            --data-urlencode "jql=project=KAN AND labels=\"${LABEL}\"" \
-            --data-urlencode "fields=summary,status" \
+            --data-urlencode "jql=project=KAN AND labels=${LABEL} ORDER BY created DESC" \
+            --data-urlencode "fields=summary,status,labels" \
             --data-urlencode "maxResults=1" \
             "https://${JIRA_SITE}/rest/api/3/search")
 
           EXISTING_KEY=$(echo "$SEARCH_RESPONSE" | jq -r '.issues[0].key // empty')
+
+          # Step 2: fallback — search by summary in case ticket was created without label
+          if [ -z "$EXISTING_KEY" ]; then
+            echo "Label search found nothing — trying summary fallback."
+            FALLBACK_RESPONSE=$(curl -s -G \
+              -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
+              -H "Accept: application/json" \
+              --data-urlencode "jql=project=KAN AND summary ~ \"PR #${PR_NUMBER} -\" ORDER BY created DESC" \
+              --data-urlencode "fields=summary,status" \
+              --data-urlencode "maxResults=1" \
+              "https://${JIRA_SITE}/rest/api/3/search")
+            EXISTING_KEY=$(echo "$FALLBACK_RESPONSE" | jq -r '.issues[0].key // empty')
+            # If found via fallback, backfill the label so future runs use fast path
+            if [ -n "$EXISTING_KEY" ]; then
+              echo "Found via summary: ${EXISTING_KEY} — backfilling label."
+              curl -s -X PUT \
+                -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
+                -H "Accept: application/json" \
+                -H "Content-Type: application/json" \
+                "https://${JIRA_SITE}/rest/api/3/issue/${EXISTING_KEY}" \
+                --data "{\"update\":{\"labels\":[{\"add\":\"${LABEL}\"}]}}" > /dev/null
+            fi
+          fi
 
           if [ -n "$EXISTING_KEY" ]; then
             echo "Ticket ${EXISTING_KEY} already exists — adding update comment."
