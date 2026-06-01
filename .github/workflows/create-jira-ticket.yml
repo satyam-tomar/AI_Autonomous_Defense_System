@@ -2,7 +2,7 @@ name: Create Jira Ticket
 
 on:
   pull_request_target:
-    types: [opened]
+    types: [opened, synchronize, reopened]
 
 jobs:
   create-ticket:
@@ -10,34 +10,96 @@ jobs:
     environment: jira
 
     steps:
-      - name: Debug secrets
-        env:
-          JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
-          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
-          JIRA_SITE: ${{ secrets.JIRA_SITE }}
-        run: |
-          echo "JIRA_EMAIL length: ${#JIRA_EMAIL}"
-          echo "JIRA_API_TOKEN length: ${#JIRA_API_TOKEN}"
-          echo "JIRA_SITE value: ${JIRA_SITE}"
-
-      - name: Create Jira Issue
+      - name: Create or Update Jira Issue
         env:
           JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
           JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
           JIRA_SITE: ${{ secrets.JIRA_SITE }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          PR_BRANCH: ${{ github.event.pull_request.head.ref }}
+          PR_BASE: ${{ github.event.pull_request.base.ref }}
+          REPO_NAME: ${{ github.repository }}
         run: |
-          SUMMARY="PR #${PR_NUMBER} - ${PR_TITLE}"
-          PAYLOAD=$(jq -n \
-            --arg summary "$SUMMARY" \
-            '{fields: {project: {key: "KAN"}, summary: $summary, issuetype: {name: "Task"}}}')
+          LABEL="github-pr-${PR_NUMBER}"
 
-          RESPONSE=$(curl -s -X POST \
+          # Check if a Jira ticket already exists for this PR (matched by label)
+          SEARCH_RESPONSE=$(curl -s -G \
             -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
             -H "Accept: application/json" \
-            -H "Content-Type: application/json" \
-            "https://${JIRA_SITE}/rest/api/3/issue" \
-            --data "$PAYLOAD")
+            --data-urlencode "jql=project=KAN AND labels=\"${LABEL}\"" \
+            --data-urlencode "fields=summary,status" \
+            --data-urlencode "maxResults=1" \
+            "https://${JIRA_SITE}/rest/api/3/search")
 
-          echo "$RESPONSE"
+          EXISTING_KEY=$(echo "$SEARCH_RESPONSE" | jq -r '.issues[0].key // empty')
+
+          if [ -n "$EXISTING_KEY" ]; then
+            echo "Ticket ${EXISTING_KEY} already exists — adding update comment."
+
+            COMMENT_TEXT="PR #${PR_NUMBER} updated by ${PR_AUTHOR}
+
+Branch: ${PR_BRANCH} → ${PR_BASE}
+URL: ${PR_URL}
+
+${PR_BODY:-No description provided.}"
+
+            COMMENT_PAYLOAD=$(jq -n \
+              --arg text "$COMMENT_TEXT" \
+              '{body: {type: "doc", version: 1, content: [{type: "paragraph", content: [{type: "text", text: $text}]}]}}')
+
+            RESPONSE=$(curl -s -X POST \
+              -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
+              -H "Accept: application/json" \
+              -H "Content-Type: application/json" \
+              "https://${JIRA_SITE}/rest/api/3/issue/${EXISTING_KEY}/comment" \
+              --data "$COMMENT_PAYLOAD")
+
+            echo "Comment added to ${EXISTING_KEY}:"
+            echo "$RESPONSE"
+
+          else
+            echo "No existing ticket found — creating new ticket."
+
+            DESCRIPTION="Repository: ${REPO_NAME}
+Branch: ${PR_BRANCH} → ${PR_BASE}
+Author: ${PR_AUTHOR}
+PR URL: ${PR_URL}
+
+Description:
+${PR_BODY:-No description provided.}"
+
+            PAYLOAD=$(jq -n \
+              --arg summary "PR #${PR_NUMBER} - ${PR_TITLE}" \
+              --arg description "$DESCRIPTION" \
+              --arg label "$LABEL" \
+              '{
+                fields: {
+                  project: {key: "KAN"},
+                  summary: $summary,
+                  description: {
+                    type: "doc",
+                    version: 1,
+                    content: [{
+                      type: "paragraph",
+                      content: [{type: "text", text: $description}]
+                    }]
+                  },
+                  issuetype: {name: "Task"},
+                  labels: [$label]
+                }
+              }')
+
+            RESPONSE=$(curl -s -X POST \
+              -u "${JIRA_EMAIL}:${JIRA_API_TOKEN}" \
+              -H "Accept: application/json" \
+              -H "Content-Type: application/json" \
+              "https://${JIRA_SITE}/rest/api/3/issue" \
+              --data "$PAYLOAD")
+
+            echo "Ticket created:"
+            echo "$RESPONSE"
+          fi
